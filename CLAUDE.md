@@ -17,31 +17,85 @@ pip install -e ".[dev]"
 # Run the application
 midi-accomp <path-to-midi-file>
 
+# Run with voice control
+midi-accomp <path-to-midi-file> -v
+
+# Run with voice + specific Whisper model
+midi-accomp <path-to-midi-file> -v --whisper-model small
+
+# List available MIDI ports
+midi-accomp --list-ports
+
 # Run tests
 pytest
 ```
 
 ## Architecture
 
-The application is structured into these core modules:
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Voice Input    │────▶│  Command Parser  │────▶│  MIDI Engine    │
+│  (Whisper STT)  │     │  (Ollama NLU)    │     │  (Playback)     │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                                          │
+                                                          ▼
+                                                 ┌─────────────────┐
+                                                 │  Virtual MIDI   │
+                                                 │  Output Port    │
+                                                 └─────────────────┘
+```
 
-- **midi_engine.py** - MIDI file parsing, playback control, tempo/velocity manipulation
-- **voice_input.py** - Push-to-talk audio recording and Whisper transcription
-- **command_parser.py** - Ollama-based NLU to convert speech to structured commands
-- **session.py** - State management (current position, tempo, playback history)
-- **main.py** - CLI entry point and event loop coordination
+### Core Modules
+
+- **midi_engine.py** - MIDI file parsing, measure tracking, playback with tempo/velocity control, gradual changes (ritardando, accelerando, crescendo, diminuendo)
+- **voice_input.py** - Push-to-talk audio recording using `sounddevice`, Whisper transcription via `faster-whisper`
+- **command_parser.py** - Ollama-based NLU with fast pattern matching fallback for simple commands
+- **session.py** - State management (position history for relative references like "4 measures ago")
+- **main.py** - CLI entry point, Rich terminal UI, command execution
+
+### Key Data Structures
+
+- `MeasureInfo` - Tick position, time signature, tempo for each measure
+- `PlaybackState` - Current position, tempo/velocity multipliers
+- `GradualChange` - Represents ritardando/accelerando/crescendo/diminuendo with start/end measures
+- `ParsedCommand` - Structured command output from NLU
 
 ## Key Dependencies
 
-- `mido` + `python-rtmidi` for MIDI I/O and virtual port creation
-- `faster-whisper` for local speech-to-text
-- `ollama` for local LLM command parsing
-- `sounddevice` for microphone input
-- `pynput` for push-to-talk key detection
-- `rich` for terminal UI
+- `mido` + `python-rtmidi` - MIDI I/O and virtual port creation
+- `faster-whisper` - Local speech-to-text (runs on CPU)
+- `ollama` - Local LLM for natural language command parsing
+- `sounddevice` - Cross-platform microphone input
+- `pynput` - Keyboard listener for push-to-talk
+- `rich` - Terminal UI with colors and tables
 
 ## Prerequisites
 
-1. Ollama with a model: `brew install ollama && ollama pull llama3.2`
-2. Virtual MIDI setup (macOS: enable IAC Driver in Audio MIDI Setup)
-3. A DAW or synth to receive MIDI output
+1. **Ollama** with a model:
+   ```bash
+   brew install ollama
+   ollama serve  # Run in background
+   ollama pull llama3.2
+   ```
+
+2. **Virtual MIDI** setup:
+   - macOS: Enable IAC Driver in Audio MIDI Setup
+   - Windows: Install loopMIDI
+   - Linux: Use ALSA virtual MIDI
+
+3. **DAW or synth** to receive MIDI (GarageBand, Logic, Pianoteq, etc.)
+
+## Supported Voice Commands
+
+| Command | Example Phrases |
+|---------|----------------|
+| Play | "play", "start", "go", "begin" |
+| Stop | "stop", "pause", "hold" |
+| Navigate | "measure 33", "go back 4 measures", "from the top" |
+| Tempo | "faster", "slower", "tempo 120" |
+| Volume | "louder", "softer", "forte", "piano" |
+| Ritardando | "ritardando into measure 24", "slow down heading into measure 16" |
+| Accelerando | "accelerando to measure 20", "speed up into measure 32" |
+| Crescendo | "crescendo over the next 4 bars", "build into measure 16" |
+| Diminuendo | "diminuendo to measure 8", "fade over the next 2 measures" |
+| Reset | "reset", "clear changes" |

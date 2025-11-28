@@ -41,6 +41,16 @@ def create_status_display(
     table.add_row("Tempo", f"{session.effective_tempo_bpm():.0f} BPM ({session.tempo_multiplier:.0%})")
     table.add_row("Velocity", f"{session.velocity_multiplier:.0%}")
 
+    # Show active gradual changes
+    active_changes = engine.get_active_changes()
+    if active_changes["tempo_changes"] or active_changes["velocity_changes"]:
+        changes_str = []
+        for tc in active_changes["tempo_changes"]:
+            changes_str.append(f"{tc['type']} m{tc['start']}-{tc['end']}")
+        for vc in active_changes["velocity_changes"]:
+            changes_str.append(f"{vc['type']} m{vc['start']}-{vc['end']}")
+        table.add_row("Changes", f"[magenta]{', '.join(changes_str)}[/]")
+
     if voice_enabled:
         voice_status = "[red]Recording...[/]" if is_recording else "[green]Ready (hold SPACE)[/]"
         table.add_row("Voice", voice_status)
@@ -64,7 +74,8 @@ def print_help(voice_enabled: bool = False, nlu_enabled: bool = False):
     console.print("  [cyan]slower[/]             - Decrease tempo 10%")
     console.print("  [cyan]louder[/]             - Increase volume 15%")
     console.print("  [cyan]softer[/]             - Decrease volume 15%")
-    console.print("  [cyan]reset[/]              - Reset tempo and volume to default")
+    console.print("  [cyan]reset[/]              - Reset tempo, volume, and gradual changes")
+    console.print("  [cyan]clear[/]              - Clear gradual tempo/velocity changes")
     console.print("  [cyan]ports[/]              - List MIDI output ports")
     console.print("  [cyan]help[/]               - Show this help")
     console.print("  [cyan]quit[/]               - Exit the program")
@@ -76,8 +87,9 @@ def print_help(voice_enabled: bool = False, nlu_enabled: bool = False):
             console.print("    - \"take it from the top\"")
             console.print("    - \"go back 4 measures\"")
             console.print("    - \"start at measure 33\"")
-            console.print("    - \"a little slower please\"")
-            console.print("    - \"play it louder\"")
+            console.print("    - \"ritardando into measure 24\"")
+            console.print("    - \"crescendo over the next 4 bars\"")
+            console.print("    - \"slow down heading into measure 16\"")
         else:
             console.print("  Examples: \"play\", \"stop\", \"start at measure 33\", \"slower\"")
     console.print()
@@ -160,12 +172,97 @@ def execute_parsed_command(
         session.velocity_multiplier = 1.0
         engine.set_tempo_multiplier(1.0)
         engine.set_velocity_multiplier(1.0)
+        engine.clear_gradual_changes()
         return False, "Tempo and velocity reset"
+
+    elif cmd_type == CommandType.CLEAR_CHANGES:
+        engine.clear_gradual_changes()
+        return False, "Cleared all gradual changes"
+
+    elif cmd_type == CommandType.RITARDANDO:
+        if parsed.tempo_change:
+            start_measure, end_measure = _resolve_range(
+                parsed.tempo_change.start,
+                parsed.tempo_change.end,
+                engine.state.current_measure,
+            )
+            engine.add_ritardando(start_measure, end_measure)
+            return False, f"Ritardando from measure {start_measure} to {end_measure}"
+        return False, "Ritardando needs a target measure"
+
+    elif cmd_type == CommandType.ACCELERANDO:
+        if parsed.tempo_change:
+            start_measure, end_measure = _resolve_range(
+                parsed.tempo_change.start,
+                parsed.tempo_change.end,
+                engine.state.current_measure,
+            )
+            engine.add_accelerando(start_measure, end_measure)
+            return False, f"Accelerando from measure {start_measure} to {end_measure}"
+        return False, "Accelerando needs a target measure"
+
+    elif cmd_type == CommandType.CRESCENDO:
+        if parsed.dynamic_change:
+            start_measure, end_measure = _resolve_range(
+                parsed.dynamic_change.start,
+                parsed.dynamic_change.end,
+                engine.state.current_measure,
+            )
+            engine.add_crescendo(start_measure, end_measure)
+            return False, f"Crescendo from measure {start_measure} to {end_measure}"
+        return False, "Crescendo needs a target measure"
+
+    elif cmd_type == CommandType.DIMINUENDO:
+        if parsed.dynamic_change:
+            start_measure, end_measure = _resolve_range(
+                parsed.dynamic_change.start,
+                parsed.dynamic_change.end,
+                engine.state.current_measure,
+            )
+            engine.add_diminuendo(start_measure, end_measure)
+            return False, f"Diminuendo from measure {start_measure} to {end_measure}"
+        return False, "Diminuendo needs a target measure"
 
     elif cmd_type == CommandType.UNKNOWN:
         return False, f"Didn't understand: {parsed.raw_text}"
 
     return False, ""
+
+
+def _resolve_range(
+    start: "PositionReference | None",
+    end: "PositionReference | None",
+    current_measure: int,
+) -> tuple[int, int]:
+    """Resolve start and end position references to actual measure numbers."""
+    from .command_parser import PositionReference
+
+    # Resolve start measure
+    start_measure = current_measure
+    if start:
+        if start.type == "measure" and start.value:
+            start_measure = start.value
+        elif start.type == "relative" and start.value:
+            start_measure = current_measure + start.value
+        elif start.type == "beginning":
+            start_measure = 1
+        # "current" uses the default
+
+    # Resolve end measure
+    end_measure = start_measure + 4  # Default: 4 measures
+    if end:
+        if end.type == "measure" and end.value:
+            end_measure = end.value
+        elif end.type == "relative" and end.value:
+            end_measure = current_measure + end.value
+        elif end.type == "beginning":
+            end_measure = 1
+
+    # Ensure start < end
+    if start_measure >= end_measure:
+        end_measure = start_measure + 4
+
+    return max(1, start_measure), max(1, end_measure)
 
 
 def execute_text_command(
