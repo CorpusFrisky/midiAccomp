@@ -51,6 +51,7 @@ pytest
 - **voice_input.py** - Push-to-talk audio recording using `sounddevice`, Whisper transcription via `faster-whisper`
 - **command_parser.py** - Ollama-based NLU with fast pattern matching fallback for simple commands
 - **session.py** - State management (position history for relative references like "4 measures ago")
+- **session_storage.py** - Save/load session snapshots to disk (JSON files stored next to MIDI files)
 - **main.py** - CLI entry point, Rich terminal UI, command execution
 
 ### Key Data Structures
@@ -99,3 +100,25 @@ pytest
 | Crescendo | "crescendo over the next 4 bars", "build into measure 16" |
 | Diminuendo | "diminuendo to measure 8", "fade over the next 2 measures" |
 | Reset | "reset", "clear changes" |
+| Save | "save", "save as slow practice" |
+| Load | "load", "load slow practice", "load last save" |
+| List Saves | "list saves", "show saves" |
+
+## Session Storage
+
+Sessions are saved as JSON files in a `.midiAccomp/` folder next to the MIDI file:
+
+```
+/path/to/music/
+├── song.mid
+└── .midiAccomp/
+    └── song/
+        ├── slow_practice.json
+        └── 2024-11-27_14-30.json
+```
+
+Saved sessions include:
+- Current measure position
+- Tempo and velocity multipliers
+- Gradual changes (ritardando, accelerando, crescendo, diminuendo)
+- MIDI file hash for integrity checking (warns if file changed)

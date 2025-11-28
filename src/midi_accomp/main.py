@@ -12,6 +12,7 @@ from rich.table import Table
 
 from .midi_engine import MidiEngine, list_output_ports
 from .session import Session
+from .session_storage import SessionStorage, apply_loaded_session
 from .command_parser import CommandParser, CommandType, ParsedCommand, check_ollama_available
 
 
@@ -76,6 +77,10 @@ def print_help(voice_enabled: bool = False, nlu_enabled: bool = False):
     console.print("  [cyan]softer[/]             - Decrease volume 15%")
     console.print("  [cyan]reset[/]              - Reset tempo, volume, and gradual changes")
     console.print("  [cyan]clear[/]              - Clear gradual tempo/velocity changes")
+    console.print("  [cyan]save[/] [name]        - Save session (auto-timestamp if no name)")
+    console.print("  [cyan]load[/] [name]        - Load session (most recent if no name)")
+    console.print("  [cyan]saves[/]              - List saved sessions")
+    console.print("  [cyan]delete[/] <name>      - Delete a saved session")
     console.print("  [cyan]ports[/]              - List MIDI output ports")
     console.print("  [cyan]help[/]               - Show this help")
     console.print("  [cyan]quit[/]               - Exit the program")
@@ -90,6 +95,8 @@ def print_help(voice_enabled: bool = False, nlu_enabled: bool = False):
             console.print("    - \"ritardando into measure 24\"")
             console.print("    - \"crescendo over the next 4 bars\"")
             console.print("    - \"slow down heading into measure 16\"")
+            console.print("    - \"save as slow practice\"")
+            console.print("    - \"load slow practice\"")
         else:
             console.print("  Examples: \"play\", \"stop\", \"start at measure 33\", \"slower\"")
     console.print()
@@ -99,6 +106,7 @@ def execute_parsed_command(
     parsed: ParsedCommand,
     engine: MidiEngine,
     session: Session,
+    storage: SessionStorage | None = None,
 ) -> tuple[bool, str]:
     """Execute a parsed command.
 
@@ -223,6 +231,65 @@ def execute_parsed_command(
             return False, f"Diminuendo from measure {start_measure} to {end_measure}"
         return False, "Diminuendo needs a target measure"
 
+    elif cmd_type == CommandType.SAVE:
+        if not storage:
+            return False, "No MIDI file loaded"
+        save_name = parsed.save_command.name if parsed.save_command else None
+        try:
+            name = storage.save(session, engine, save_name)
+            return False, f"Saved session as '{name}'"
+        except Exception as e:
+            return False, f"Save failed: {e}"
+
+    elif cmd_type == CommandType.LOAD:
+        if not storage:
+            return False, "No MIDI file loaded"
+        save_name = parsed.save_command.name if parsed.save_command else None
+        try:
+            if save_name is None:
+                # Load most recent save
+                save_name = storage.get_most_recent_save()
+                if not save_name:
+                    return False, "No saves found"
+            result = storage.load(save_name)
+            if not result["hash_match"]:
+                console.print("[yellow]Warning: MIDI file has changed since this session was saved[/]")
+            apply_loaded_session(result["data"], session, engine)
+            return False, f"Loaded session '{save_name}'"
+        except FileNotFoundError:
+            return False, f"Save '{save_name}' not found"
+        except Exception as e:
+            return False, f"Load failed: {e}"
+
+    elif cmd_type == CommandType.LIST_SAVES:
+        if not storage:
+            return False, "No MIDI file loaded"
+        saves = storage.list_saves()
+        if not saves:
+            return False, "No saved sessions"
+        console.print("[bold]Saved sessions:[/]")
+        for save in saves:
+            changes_indicator = " [magenta]*[/]" if save.has_gradual_changes else ""
+            console.print(
+                f"  [cyan]{save.name}[/] - "
+                f"m{save.current_measure}, "
+                f"tempo {save.tempo_multiplier:.0%}, "
+                f"vol {save.velocity_multiplier:.0%}"
+                f"{changes_indicator}"
+            )
+        return False, ""
+
+    elif cmd_type == CommandType.DELETE_SAVE:
+        if not storage:
+            return False, "No MIDI file loaded"
+        if not parsed.save_command or not parsed.save_command.name:
+            return False, "Specify a save name to delete"
+        save_name = parsed.save_command.name
+        if storage.delete(save_name):
+            return False, f"Deleted '{save_name}'"
+        else:
+            return False, f"Save '{save_name}' not found"
+
     elif cmd_type == CommandType.UNKNOWN:
         return False, f"Didn't understand: {parsed.raw_text}"
 
@@ -270,6 +337,7 @@ def execute_text_command(
     engine: MidiEngine,
     session: Session,
     parser: CommandParser | None = None,
+    storage: SessionStorage | None = None,
 ) -> tuple[bool, str, str]:
     """Execute a text command (typed or from voice).
 
@@ -311,7 +379,7 @@ def execute_text_command(
             elif parsed.position.type == "relative":
                 interpreted += f" {parsed.position.value:+d} measures"
 
-        should_quit, message = execute_parsed_command(parsed, engine, session)
+        should_quit, message = execute_parsed_command(parsed, engine, session, storage)
         return should_quit, message, interpreted
 
     # Fall back to simple command parsing
@@ -375,6 +443,64 @@ def execute_text_command(
         engine.set_velocity_multiplier(1.0)
         return False, "Tempo and velocity reset", "reset"
 
+    elif command == 'save':
+        if not storage:
+            return False, "No MIDI file loaded", "save"
+        save_name = " ".join(args) if args else None
+        try:
+            name = storage.save(session, engine, save_name)
+            return False, f"Saved session as '{name}'", "save"
+        except Exception as e:
+            return False, f"Save failed: {e}", "save"
+
+    elif command == 'load':
+        if not storage:
+            return False, "No MIDI file loaded", "load"
+        save_name = " ".join(args) if args else None
+        try:
+            if save_name is None:
+                save_name = storage.get_most_recent_save()
+                if not save_name:
+                    return False, "No saves found", "load"
+            result = storage.load(save_name)
+            if not result["hash_match"]:
+                console.print("[yellow]Warning: MIDI file has changed since this session was saved[/]")
+            apply_loaded_session(result["data"], session, engine)
+            return False, f"Loaded session '{save_name}'", "load"
+        except FileNotFoundError:
+            return False, f"Save '{save_name}' not found", "load"
+        except Exception as e:
+            return False, f"Load failed: {e}", "load"
+
+    elif command == 'saves':
+        if not storage:
+            return False, "No MIDI file loaded", "saves"
+        saves = storage.list_saves()
+        if not saves:
+            return False, "No saved sessions", "saves"
+        console.print("[bold]Saved sessions:[/]")
+        for save in saves:
+            changes_indicator = " [magenta]*[/]" if save.has_gradual_changes else ""
+            console.print(
+                f"  [cyan]{save.name}[/] - "
+                f"m{save.current_measure}, "
+                f"tempo {save.tempo_multiplier:.0%}, "
+                f"vol {save.velocity_multiplier:.0%}"
+                f"{changes_indicator}"
+            )
+        return False, "", "saves"
+
+    elif command == 'delete':
+        if not storage:
+            return False, "No MIDI file loaded", "delete"
+        if not args:
+            return False, "Usage: delete <save-name>", "delete"
+        save_name = " ".join(args)
+        if storage.delete(save_name):
+            return False, f"Deleted '{save_name}'", "delete"
+        else:
+            return False, f"Save '{save_name}' not found", "delete"
+
     else:
         return False, f"Unknown command: {command}", ""
 
@@ -391,6 +517,7 @@ def run_cli(
     """Run the interactive CLI."""
     engine = MidiEngine()
     session = Session()
+    storage: SessionStorage | None = None
     voice_input = None
     command_parser = None
     last_transcription = ""
@@ -403,6 +530,7 @@ def run_cli(
     try:
         engine.load_file(midi_file)
         session.midi_file_path = midi_file
+        storage = SessionStorage(midi_file)
     except Exception as e:
         console.print(f"[red]Error loading MIDI file:[/] {e}")
         return 1
@@ -457,7 +585,7 @@ def run_cli(
 
                 # Execute command
                 should_quit, message, interpreted = execute_text_command(
-                    text, engine, session, command_parser
+                    text, engine, session, command_parser, storage
                 )
                 last_interpreted = interpreted
 
@@ -507,7 +635,7 @@ def run_cli(
                 continue
 
             should_quit, message, interpreted = execute_text_command(
-                cmd, engine, session, command_parser
+                cmd, engine, session, command_parser, storage
             )
 
             if message:

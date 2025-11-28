@@ -49,3 +49,20 @@ class Session:
         self.tempo_multiplier = 1.0
         self.velocity_multiplier = 1.0
         self.position_history = []
+
+    def to_dict(self) -> dict:
+        """Serialize session state to a dictionary."""
+        return {
+            "current_measure": self.current_measure,
+            "tempo_multiplier": self.tempo_multiplier,
+            "velocity_multiplier": self.velocity_multiplier,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, midi_file_path: str | None = None) -> "Session":
+        """Create a session from a dictionary."""
+        session = cls(midi_file_path=midi_file_path)
+        session.current_measure = data.get("current_measure", 1)
+        session.tempo_multiplier = data.get("tempo_multiplier", 1.0)
+        session.velocity_multiplier = data.get("velocity_multiplier", 1.0)
+        return session

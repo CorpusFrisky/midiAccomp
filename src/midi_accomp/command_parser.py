@@ -24,6 +24,10 @@ class CommandType(Enum):
     DIMINUENDO = "diminuendo"
     RESET = "reset"
     CLEAR_CHANGES = "clear_changes"
+    SAVE = "save"
+    LOAD = "load"
+    LIST_SAVES = "list_saves"
+    DELETE_SAVE = "delete_save"
     UNKNOWN = "unknown"
 
 
@@ -53,12 +57,19 @@ class TempoChange:
 
 
 @dataclass
+class SaveCommand:
+    """A save or load command."""
+    name: str | None = None  # Save name (None for auto-timestamp or most recent)
+
+
+@dataclass
 class ParsedCommand:
     """A parsed command from natural language."""
     command_type: CommandType
     position: PositionReference | None = None
     tempo_change: TempoChange | None = None
     dynamic_change: DynamicChange | None = None
+    save_command: SaveCommand | None = None
     raw_text: str = ""
     confidence: float = 1.0
 
@@ -75,6 +86,10 @@ Command types:
 - velocity: Set or adjust volume/dynamics
 - reset: Reset tempo and velocity to defaults
 - clear_changes: Clear any gradual tempo/velocity changes
+- save: Save current session state
+- load: Load a saved session
+- list_saves: List all saved sessions
+- delete_save: Delete a saved session
 
 Position references:
 - "measure 33" -> {"type": "measure", "value": 33}
@@ -165,6 +180,27 @@ Output: {"command": "tempo", "tempo": {"type": "accelerando", "start": {"type": 
 
 Input: "clear changes"
 Output: {"command": "clear_changes"}
+
+Input: "save"
+Output: {"command": "save"}
+
+Input: "save as slow practice"
+Output: {"command": "save", "save_name": "slow practice"}
+
+Input: "load slow practice"
+Output: {"command": "load", "save_name": "slow practice"}
+
+Input: "load last save"
+Output: {"command": "load"}
+
+Input: "list saves"
+Output: {"command": "list_saves"}
+
+Input: "show saves"
+Output: {"command": "list_saves"}
+
+Input: "delete slow practice"
+Output: {"command": "delete_save", "save_name": "slow practice"}
 
 Respond with only valid JSON. If you cannot understand the command, respond with {"command": "unknown"}.
 """
@@ -396,6 +432,60 @@ class CommandParser:
                 raw_text=text,
             )
 
+        # Save/Load commands
+        # "save" - save with auto-timestamp
+        if text == "save":
+            return ParsedCommand(
+                command_type=CommandType.SAVE,
+                save_command=SaveCommand(),
+                raw_text=text,
+            )
+
+        # "save as <name>" or "save <name>"
+        match = re.match(r"save\s+(?:as\s+)?(.+)", text)
+        if match:
+            save_name = match.group(1).strip()
+            return ParsedCommand(
+                command_type=CommandType.SAVE,
+                save_command=SaveCommand(name=save_name),
+                raw_text=text,
+            )
+
+        # "load last save" or "load" - load most recent
+        if text in ("load", "load last save", "load last", "load recent"):
+            return ParsedCommand(
+                command_type=CommandType.LOAD,
+                save_command=SaveCommand(),
+                raw_text=text,
+            )
+
+        # "load <name>"
+        match = re.match(r"load\s+(.+)", text)
+        if match:
+            save_name = match.group(1).strip()
+            return ParsedCommand(
+                command_type=CommandType.LOAD,
+                save_command=SaveCommand(name=save_name),
+                raw_text=text,
+            )
+
+        # "list saves" or "show saves"
+        if text in ("list saves", "show saves", "saves", "list sessions", "show sessions"):
+            return ParsedCommand(
+                command_type=CommandType.LIST_SAVES,
+                raw_text=text,
+            )
+
+        # "delete <name>"
+        match = re.match(r"delete\s+(?:save\s+)?(.+)", text)
+        if match:
+            save_name = match.group(1).strip()
+            return ParsedCommand(
+                command_type=CommandType.DELETE_SAVE,
+                save_command=SaveCommand(name=save_name),
+                raw_text=text,
+            )
+
         return None
 
     def _parse_json_response(self, json_str: str, original_text: str, current_measure: int = 1) -> ParsedCommand:
@@ -420,10 +510,20 @@ class CommandParser:
             "velocity": CommandType.VELOCITY,
             "reset": CommandType.RESET,
             "clear_changes": CommandType.CLEAR_CHANGES,
+            "save": CommandType.SAVE,
+            "load": CommandType.LOAD,
+            "list_saves": CommandType.LIST_SAVES,
+            "delete_save": CommandType.DELETE_SAVE,
             "unknown": CommandType.UNKNOWN,
         }
 
         command_type = command_map.get(command_str, CommandType.UNKNOWN)
+
+        # Parse save command
+        save_command = None
+        if command_type in (CommandType.SAVE, CommandType.LOAD, CommandType.DELETE_SAVE):
+            save_name = data.get("save_name")
+            save_command = SaveCommand(name=save_name)
 
         # Parse position
         position = None
@@ -513,6 +613,7 @@ class CommandParser:
             position=position,
             tempo_change=tempo_change,
             dynamic_change=dynamic_change,
+            save_command=save_command,
             raw_text=original_text,
             confidence=0.9 if command_type != CommandType.UNKNOWN else 0.0,
         )

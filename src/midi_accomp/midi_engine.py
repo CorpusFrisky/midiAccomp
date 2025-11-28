@@ -393,6 +393,31 @@ class MidiEngine:
             ],
         }
 
+    def get_gradual_changes_dict(self) -> dict:
+        """Get gradual changes in a format suitable for serialization."""
+        return {
+            "tempo": [
+                {
+                    "type": c.change_type.value,
+                    "start": c.start_measure,
+                    "end": c.end_measure,
+                    "start_value": c.start_value,
+                    "end_value": c.end_value,
+                }
+                for c in self._tempo_changes
+            ],
+            "velocity": [
+                {
+                    "type": c.change_type.value,
+                    "start": c.start_measure,
+                    "end": c.end_measure,
+                    "start_value": c.start_value,
+                    "end_value": c.end_value,
+                }
+                for c in self._velocity_changes
+            ],
+        }
+
     def set_position_callback(self, callback: Callable[[int, int, float], None]) -> None:
         """Set a callback for position updates: (measure, tick, time)."""
         self._on_position_change = callback
